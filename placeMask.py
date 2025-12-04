@@ -1,42 +1,144 @@
 import numpy as np
 import cv2
 
+def selecionar_mascara_manual(source_rgb):
+    img_bgr = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2BGR)
+    points = []
+    
+    def mouse_callback(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            points.append((x, y))
+
+    window_name = "1. SELECAO: Clique nos pontos p/ contornar. ENTER p/ finalizar."
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, mouse_callback)
+
+    while True:
+        display = img_bgr.copy()
+        
+        if len(points) > 0:
+            for pt in points:
+                cv2.circle(display, pt, 3, (0, 0, 255), -1)
+            
+            if len(points) > 1:
+                cv2.polylines(display, [np.array(points)], False, (0, 255, 0), 2)
+        
+        cv2.imshow(window_name, display)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == 13:
+            if len(points) > 2:
+                break
+            else:
+                print("Selecione pelo menos 3 pontos para formar uma área.")
+
+    cv2.destroyAllWindows()
+
+    h, w = source_rgb.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    
+    cv2.fillPoly(mask, [np.array(points)], 255)
+
+    return mask > 127
+
 def escolher_offset(source, target, mask):
+    """
+    Permite ao usuário arrastar a parte recortada (mask) sobre a imagem destino.
+    (Versão ajustada para telas menores - redimensiona a visualização)
+    """
+    # 1. Preparação do recorte original
     ys, xs = np.where(mask)
+    if len(ys) == 0:
+        raise ValueError("A máscara está vazia. Selecione uma área na imagem de origem.")
+        
     y_min, y_max = ys.min(), ys.max()
     x_min, x_max = xs.min(), xs.max()
 
     cut = source[y_min:y_max+1, x_min:x_max+1]
     mask_cut = mask[y_min:y_max+1, x_min:x_max+1]
 
-    cut = cv2.cvtColor(cut, cv2.COLOR_RGB2BGR)
-    target = cv2.cvtColor(target, cv2.COLOR_RGB2BGR)
+    cut_bgr = cv2.cvtColor(cut, cv2.COLOR_RGB2BGR)
+    target_bgr = cv2.cvtColor(target, cv2.COLOR_RGB2BGR)
 
-    h, w = cut.shape[:2]
-    click = [-1, -1]
-
+    # --- LÓGICA DE REDIMENSIONAMENTO PARA VISUALIZAÇÃO ---
+    # Define um tamanho máximo para a janela (ajuste conforme seu monitor, ex: 1000px de altura)
+    max_height = 800
+    max_width = 1200
+    
+    h_orig, w_orig = target.shape[:2]
+    
+    # Calcula a escala necessária para caber na tela
+    scale = 1.0
+    if h_orig > max_height or w_orig > max_width:
+        scale = min(max_height / h_orig, max_width / w_orig)
+    
+    # Cria versões redimensionadas APENAS para exibir na janela
+    target_disp = cv2.resize(target_bgr, None, fx=scale, fy=scale)
+    cut_disp = cv2.resize(cut_bgr, None, fx=scale, fy=scale)
+    
+    # Redimensiona a máscara usando interpolação vizinho mais próximo para manter binário (0 ou 255)
+    mask_cut_disp = cv2.resize(mask_cut.astype(np.uint8), None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+    
+    h_cut_disp, w_cut_disp = cut_disp.shape[:2]
+    
+    # Posição inicial do clique (centralizada na tela redimensionada)
+    click = [target_disp.shape[1] // 2, target_disp.shape[0] // 2]
+    
     def callback(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
+        if event == cv2.EVENT_LBUTTONDOWN or (flags & cv2.EVENT_FLAG_LBUTTON):
             click[0] = x
             click[1] = y
 
-    temp = target.copy()
-    cv2.namedWindow("posicione")
-    cv2.setMouseCallback("posicione", callback)
+    window_name = "2. POSICIONAMENTO (Visualizacao Reduzida)"
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, callback)
 
     while True:
-        if click[0] != -1:
-            temp = target.copy()
-            y0 = click[1]
-            x0 = click[0]
-            y1 = y0 + h
-            x1 = x0 + w
-            if y0 >= 0 and x0 >= 0 and y1 <= target.shape[0] and x1 <= target.shape[1]:
-                temp[y0:y1, x0:x1] = np.where(mask_cut[...,None], cut, temp[y0:y1, x0:x1])
-        cv2.imshow("posicione", temp)
+        temp = target_disp.copy()
+        
+        # Centraliza o recorte no mouse (coordenadas da tela reduzida)
+        x_center = click[0]
+        y_center = click[1]
+        
+        x0 = int(x_center - w_cut_disp / 2)
+        y0 = int(y_center - h_cut_disp / 2)
+        x1 = x0 + w_cut_disp
+        y1 = y0 + h_cut_disp
+        
+        # Lógica de sobreposição (usando as dimensões reduzidas)
+        tgt_y0 = max(0, y0)
+        tgt_x0 = max(0, x0)
+        tgt_y1 = min(target_disp.shape[0], y1)
+        tgt_x1 = min(target_disp.shape[1], x1)
+
+        src_y0 = tgt_y0 - y0
+        src_x0 = tgt_x0 - x0
+        src_y1 = src_y0 + (tgt_y1 - tgt_y0)
+        src_x1 = src_x0 + (tgt_x1 - tgt_x0)
+
+        if tgt_y1 > tgt_y0 and tgt_x1 > tgt_x0:
+            region = temp[tgt_y0:tgt_y1, tgt_x0:tgt_x1]
+            overlay = cut_disp[src_y0:src_y1, src_x0:src_x1]
+            mask_ov = mask_cut_disp[src_y0:src_y1, src_x0:src_x1]
+            
+            # Cola visualmente
+            np.copyto(region, overlay, where=(mask_ov > 0)[..., None])
+
+        cv2.imshow(window_name, temp)
         k = cv2.waitKey(1)
-        if k == 13:
+        
+        if k == 13: # Enter
+            # --- CONVERSÃO DE VOLTA PARA COORDENADAS ORIGINAIS ---
+            # 1. Onde está o topo-esquerda na tela reduzida?
+            final_y_disp = click[1] - h_cut_disp / 2
+            final_x_disp = click[0] - w_cut_disp / 2
+            
+            # 2. Divide pela escala para achar a posição na imagem original gigante
+            final_y_real = int(final_y_disp / scale)
+            final_x_real = int(final_x_disp / scale)
             break
 
     cv2.destroyAllWindows()
-    return (click[1] - y_min, click[0] - x_min)
+    
+    # Retorna o offset baseado nas coordenadas REAIS
+    return (final_y_real - y_min, final_x_real - x_min)
