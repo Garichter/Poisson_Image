@@ -3,13 +3,6 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
-def ensure_rgb(img):
-    if img.ndim == 2:
-        return cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    if img.shape[2] == 4:
-        return img[:, :, :3]
-    return img
-
 def build_index_map(mask):
     h, w = mask.shape
     idx = -np.ones((h, w), dtype=int)
@@ -18,41 +11,42 @@ def build_index_map(mask):
         idx[y, x] = k
     return idx, coords
 
-def neighbors_4(y, x, h, w):
+def neighbors(y, x, h, w):
+    vizinhos = []
     for ny, nx in ((y-1, x), (y+1, x), (y, x-1), (y, x+1)):
         if 0 <= ny < h and 0 <= nx < w:
-            yield ny, nx
+            vizinhos.append((ny, nx))
+    return vizinhos
 
-def solve_channel_cloning(target, source, mask, offset, mixed):
-    h_t, w_t = target.shape
-    h_s, w_s = source.shape
+def solve_channel(destino, fonte, mask, offset, mixed):
+    alt_destino, lar_destino = destino.shape
+    alt_fonte, lar_fonte = fonte.shape
     oy, ox = offset
 
     idx, coords = build_index_map(mask)
     m = coords.shape[0]
 
-    A_data = []
-    A_rows = []
-    A_cols = []
+    L_data = []
+    L_linha = []
+    L_coluna = []
     b = np.zeros(m, dtype=np.float64)
 
     for k, (y, x) in enumerate(coords):
-        N = list(neighbors_4(y, x, h_t, w_t))
-        deg = len(N)
+        N = neighbors(y, x, alt_destino, lar_destino)
 
-        A_rows.append(k)
-        A_cols.append(k)
-        A_data.append(deg)
+        L_linha.append(k)
+        L_coluna.append(k)
+        L_data.append(len(N))
 
         ssum = 0.0
         for ny, nx in N:
             j = idx[ny, nx]
             if j != -1:
-                A_rows.append(k)
-                A_cols.append(j)
-                A_data.append(-1)
+                L_linha.append(k)
+                L_coluna.append(j)
+                L_data.append(-1)
             else:
-                ssum += target[ny, nx]
+                ssum += destino[ny, nx]
         b[k] += ssum
 
         for ny, nx in N:
@@ -61,17 +55,17 @@ def solve_channel_cloning(target, source, mask, offset, mixed):
             qy = ny - oy
             qx = nx - ox
 
-            if 0 <= py < h_s and 0 <= px < w_s:
-                gp = float(source[py, px])
+            if 0 <= py < alt_fonte and 0 <= px < lar_fonte:
+                gp = float(fonte[py, px])
             else:
                 gp = 0.0
-            if 0 <= qy < h_s and 0 <= qx < w_s:
-                gq = float(source[qy, qx])
+            if 0 <= qy < alt_fonte and 0 <= qx < lar_fonte:
+                gq = float(fonte[qy, qx])
             else:
                 gq = 0.0
 
-            sp = float(target[y, x])
-            sq = float(target[ny, nx])
+            sp = float(destino[y, x])
+            sq = float(destino[ny, nx])
 
             if mixed:
                 v = (sp - sq) if abs(sp - sq) > abs(gp - gq) else (gp - gq)
@@ -80,31 +74,28 @@ def solve_channel_cloning(target, source, mask, offset, mixed):
 
             b[k] += v
 
-    A = sparse.csr_matrix((A_data, (A_rows, A_cols)), shape=(m, m))
+    A = sparse.csr_matrix((L_data, (L_linha, L_coluna)), shape=(m, m))
     x_sol = spsolve(A, b)
 
-    out = target.copy().astype(np.float64)
+    out = destino.copy().astype(np.float64)
     for i, (y, xp) in enumerate(coords):
         out[y, xp] = x_sol[i]
 
     return np.clip(out, 0, 255).astype(np.uint8)
 
-def seamless_clone_poisson(target_rgb, source_rgb, mask_src, offset, mixed=False):
-    target_rgb = ensure_rgb(target_rgb)
-    source_rgb = ensure_rgb(source_rgb)
-    
-    out = target_rgb.copy().astype(np.float64)
+def seamless_clone(destino, fonte, mascara, offset, mixed=False):    
+    out = destino.copy().astype(np.float64)
 
-    h_t, w_t = target_rgb.shape[:2]
-    h_s, w_s = mask_src.shape
+    alt_destino, lar_destino = destino.shape[:2]
+    alt_fonte, lar_fonte = mascara.shape
     oy, ox = offset
 
-    mask = np.zeros((h_t, w_t), dtype=bool)
+    mask = np.zeros((alt_destino, lar_destino), dtype=bool)
 
     y0 = max(0, oy)
     x0 = max(0, ox)
-    y1 = min(h_t, oy + h_s)
-    x1 = min(w_t, ox + w_s)
+    y1 = min(alt_destino, oy + alt_fonte)
+    x1 = min(lar_destino, ox + lar_fonte)
 
     sy0 = y0 - oy
     sx0 = x0 - ox
@@ -112,14 +103,14 @@ def seamless_clone_poisson(target_rgb, source_rgb, mask_src, offset, mixed=False
     sx1 = sx0 + (x1 - x0)
 
     if sy1 > sy0 and sx1 > sx0:
-        mask[y0:y1, x0:x1] = mask_src[sy0:sy1, sx0:sx1]
+        mask[y0:y1, x0:x1] = mascara[sy0:sy1, sx0:sx1]
 
-    if not np.any(mask): return target_rgb
+    if not np.any(mask): return destino
 
     for c in range(3):
-        out[:, :, c] = solve_channel_cloning(
-            target_rgb[:, :, c],
-            source_rgb[:, :, c],
+        out[:, :, c] = solve_channel(
+            destino[:, :, c],
+            fonte[:, :, c],
             mask,
             offset,
             mixed

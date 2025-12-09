@@ -42,11 +42,6 @@ def selecionar_mascara_manual(source_rgb):
     return mask > 127
 
 def escolher_offset(source, target, mask):
-    """
-    Permite ao usuário arrastar a parte recortada (mask) sobre a imagem destino.
-    (Versão ajustada para telas menores - redimensiona a visualização)
-    """
-    # 1. Preparação do recorte original
     ys, xs = np.where(mask)
     if len(ys) == 0:
         raise ValueError("A máscara está vazia. Selecione uma área na imagem de origem.")
@@ -60,28 +55,22 @@ def escolher_offset(source, target, mask):
     cut_bgr = cv2.cvtColor(cut, cv2.COLOR_RGB2BGR)
     target_bgr = cv2.cvtColor(target, cv2.COLOR_RGB2BGR)
 
-    # --- LÓGICA DE REDIMENSIONAMENTO PARA VISUALIZAÇÃO ---
-    # Define um tamanho máximo para a janela (ajuste conforme seu monitor, ex: 1000px de altura)
     max_height = 800
     max_width = 1200
     
     h_orig, w_orig = target.shape[:2]
     
-    # Calcula a escala necessária para caber na tela
     scale = 1.0
     if h_orig > max_height or w_orig > max_width:
         scale = min(max_height / h_orig, max_width / w_orig)
     
-    # Cria versões redimensionadas APENAS para exibir na janela
     target_disp = cv2.resize(target_bgr, None, fx=scale, fy=scale)
     cut_disp = cv2.resize(cut_bgr, None, fx=scale, fy=scale)
-    
-    # Redimensiona a máscara usando interpolação vizinho mais próximo para manter binário (0 ou 255)
+
     mask_cut_disp = cv2.resize(mask_cut.astype(np.uint8), None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
     
     h_cut_disp, w_cut_disp = cut_disp.shape[:2]
     
-    # Posição inicial do clique (centralizada na tela redimensionada)
     click = [target_disp.shape[1] // 2, target_disp.shape[0] // 2]
     
     def callback(event, x, y, flags, param):
@@ -96,7 +85,6 @@ def escolher_offset(source, target, mask):
     while True:
         temp = target_disp.copy()
         
-        # Centraliza o recorte no mouse (coordenadas da tela reduzida)
         x_center = click[0]
         y_center = click[1]
         
@@ -104,8 +92,7 @@ def escolher_offset(source, target, mask):
         y0 = int(y_center - h_cut_disp / 2)
         x1 = x0 + w_cut_disp
         y1 = y0 + h_cut_disp
-        
-        # Lógica de sobreposição (usando as dimensões reduzidas)
+
         tgt_y0 = max(0, y0)
         tgt_x0 = max(0, x0)
         tgt_y1 = min(target_disp.shape[0], y1)
@@ -121,24 +108,18 @@ def escolher_offset(source, target, mask):
             overlay = cut_disp[src_y0:src_y1, src_x0:src_x1]
             mask_ov = mask_cut_disp[src_y0:src_y1, src_x0:src_x1]
             
-            # Cola visualmente
             np.copyto(region, overlay, where=(mask_ov > 0)[..., None])
 
         cv2.imshow(window_name, temp)
         k = cv2.waitKey(1)
         
-        if k == 13: # Enter
-            # --- CONVERSÃO DE VOLTA PARA COORDENADAS ORIGINAIS ---
-            # 1. Onde está o topo-esquerda na tela reduzida?
+        if k == 13: 
             final_y_disp = click[1] - h_cut_disp / 2
             final_x_disp = click[0] - w_cut_disp / 2
-            
-            # 2. Divide pela escala para achar a posição na imagem original gigante
             final_y_real = int(final_y_disp / scale)
             final_x_real = int(final_x_disp / scale)
             break
 
     cv2.destroyAllWindows()
     
-    # Retorna o offset baseado nas coordenadas REAIS
     return (final_y_real - y_min, final_x_real - x_min)
